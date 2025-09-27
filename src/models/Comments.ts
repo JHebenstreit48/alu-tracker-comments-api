@@ -1,3 +1,4 @@
+// path: src/models/Comments.ts
 import { Schema, InferSchemaType, model } from "mongoose";
 
 const CommentsSchema = new Schema(
@@ -11,6 +12,10 @@ const CommentsSchema = new Schema(
     // Store but NEVER return publicly. select:false prevents accidental exposure.
     authorEmail: { type: String, trim: true, maxlength: 254, select: false },
     authorId: { type: Schema.Types.ObjectId, ref: "User" }, // for logged-in linkage
+
+    // NEW: guest self-management (hash-only; never return publicly)
+    editKeyHash: { type: String, select: false },
+
     status: { type: String, enum: ["visible", "pending", "hidden"], default: "pending", index: true }
   },
   { timestamps: true, collection: "comments" }

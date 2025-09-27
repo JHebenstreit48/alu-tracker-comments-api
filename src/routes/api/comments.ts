@@ -1,6 +1,8 @@
+// path: src/routes/api/comments.ts
 import { Router, type Request, type Response } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
+import crypto from "node:crypto";
 import Comment from "@/models/Comments";
 
 const router = Router();
@@ -17,7 +19,7 @@ const limiter = rateLimit({
   legacyHeaders: false
 });
 
-// ---- Zod schema (validate first, then transform) ----
+// ---- Zod schemas ----
 const createCommentSchema = z.object({
   normalizedKey: z.string().trim().min(1).max(200),
   brand: z.string().trim().max(120).optional(),
@@ -27,6 +29,15 @@ const createCommentSchema = z.object({
   authorName: z.string().trim().max(120).optional(),
   authorEmail: z.string().trim().max(254).email("Invalid email").optional(),
   hp: z.string().optional()
+});
+
+const selfEditSchema = z.object({
+  body: z.string().min(5).max(2000).transform((s) => s.replace(/\s+/g, " ").trim()),
+  editKey: z.string().optional()
+});
+
+const selfDeleteSchema = z.object({
+  editKey: z.string().optional()
 });
 
 // ---- Helpers ----
@@ -44,6 +55,10 @@ function requireAdminKey(req: Request, res: Response): boolean {
     return false;
   }
   return true;
+}
+
+function sha256Hex(input: string): string {
+  return crypto.createHash("sha256").update(input, "utf8").digest("hex");
 }
 
 /* ============================
@@ -148,7 +163,7 @@ router.get("/:slug", async (req: Request<{ slug: string }>, res: Response) => {
   }
 });
 
-// POST /api/comments → create (guest or logged-in later); pending by default
+// POST /api/comments → create (guest or logged-in later)
 router.post("/", limiter, async (req: Request, res: Response) => {
   try {
     const parsed = createCommentSchema.safeParse(req.body);
@@ -167,8 +182,12 @@ router.post("/", limiter, async (req: Request, res: Response) => {
       return;
     }
 
+    // Always generate a guest editKey; if the comment later gets claimed to a user,
+    // the key still works for the browser that created it.
+    const editKey = crypto.randomBytes(24).toString("hex");
     const created = await Comment.create({
       ...data,
+      editKeyHash: sha256Hex(editKey),
       status: AUTO_VISIBLE ? "visible" : "pending"
     });
 
@@ -176,9 +195,86 @@ router.post("/", limiter, async (req: Request, res: Response) => {
       `[comments] created _id=${created._id.toString()} key=${created.normalizedKey} status=${created.status}`
     );
 
-    res.json({ ok: true, data: { id: created._id, status: created.status } });
+    // Return editKey so guests can store it; logged-in users can ignore it.
+    res.json({ ok: true, data: { id: created._id, status: created.status, editKey } });
   } catch (err) {
     console.error("POST /api/comments error:", err);
+    res.status(500).json({ ok: false, error: { code: "SERVER_ERROR", message: "Unexpected error" } });
+  }
+});
+
+/* ============================
+   SELF (owner edit/delete) — guest-only for now
+   ============================ */
+
+// PATCH /api/comments/:id/self  body: { body, editKey? }
+router.patch("/:id/self", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const parsed = selfEditSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: { code: "VALIDATION_ERROR", message: "Invalid input" } });
+      return;
+    }
+
+    const comment = await Comment.findById(id).select("+editKeyHash");
+    if (!comment) {
+      res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Comment not found" } });
+      return;
+    }
+
+    // For now, guests only: require a matching editKey.
+    const hasGuestKey =
+      !!parsed.data.editKey &&
+      !!comment.editKeyHash &&
+      sha256Hex(parsed.data.editKey) === comment.editKeyHash;
+
+    if (!hasGuestKey) {
+      res.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "Not allowed" } });
+      return;
+    }
+
+    comment.body = parsed.data.body;
+    await comment.save();
+
+    res.json({ ok: true, data: { id: comment._id } });
+  } catch (err) {
+    console.error("PATCH /api/comments/:id/self error:", err);
+    res.status(500).json({ ok: false, error: { code: "SERVER_ERROR", message: "Unexpected error" } });
+  }
+});
+
+// DELETE /api/comments/:id/self  body: { editKey? }
+router.delete("/:id/self", async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const parsed = selfDeleteSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: { code: "VALIDATION_ERROR", message: "Invalid input" } });
+      return;
+    }
+
+    const comment = await Comment.findById(id).select("+editKeyHash");
+    if (!comment) {
+      res.status(404).json({ ok: false, error: { code: "NOT_FOUND", message: "Comment not found" } });
+      return;
+    }
+
+    // For now, guests only: require a matching editKey.
+    const hasGuestKey =
+      !!parsed.data.editKey &&
+      !!comment.editKeyHash &&
+      sha256Hex(parsed.data.editKey) === comment.editKeyHash;
+
+    if (!hasGuestKey) {
+      res.status(403).json({ ok: false, error: { code: "FORBIDDEN", message: "Not allowed" } });
+      return;
+    }
+
+    await Comment.findByIdAndDelete(id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("DELETE /api/comments/:id/self error:", err);
     res.status(500).json({ ok: false, error: { code: "SERVER_ERROR", message: "Unexpected error" } });
   }
 });
