@@ -1,11 +1,10 @@
-// src/server.ts
 import "dotenv/config";
 import express from "express";
 import helmet from "helmet";
 import cors, { type CorsOptions } from "cors";
 import { connectToDb } from "@/Utility/connection";
 import commentsRoutes from "@/routes/api/comments";
-import feedbackRoutes from "@/routes/api/feedback";   // ← add this
+import feedbackRoutes from "@/routes/api/feedback";
 import internalRoutes from "@/routes/api/internal";
 
 const app = express();
@@ -19,23 +18,26 @@ const extras = (process.env.EXTRA_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+const allowedOrigins = [primary, ...extras];
 
 const corsOptions: CorsOptions = {
-  origin: [primary, ...extras],
-  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"], // include DELETE for admin endpoints
-  credentials: false,
+  origin: allowedOrigins,
+  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+  credentials: false
 };
 app.use(cors(corsOptions));
+
+console.log("🌐 CORS allowed origins:", allowedOrigins.join(", ") || "(none)");
 
 // Health
 app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
 
 // Routes
 app.use("/api/comments", commentsRoutes);
-app.use("/api/feedback", feedbackRoutes);             // ← mount feedback routes
+app.use("/api/feedback", feedbackRoutes);
 app.use("/api/internal", internalRoutes);
 
-// IMPORTANT: bind to 0.0.0.0 so Render can reach it
+// IMPORTANT: bind to 0.0.0.0 so Render (and Docker) can reach it
 const PORT = Number(process.env.PORT) || 3004;
 
 connectToDb().then(() => {

@@ -39,6 +39,7 @@ router.post("/", postLimiter, async (req: Request, res: Response) => {
       return;
     }
     await Feedback.create({ ...data, userAgent: req.headers["user-agent"] || undefined });
+    console.log(`[feedback] created category=${data.category} len=${data.message.length}`);
     res.json({ ok: true });
   } catch (err) {
     console.error("POST /api/feedback error:", err);

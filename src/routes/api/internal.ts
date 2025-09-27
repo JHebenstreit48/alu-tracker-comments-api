@@ -1,11 +1,10 @@
-// src/routes/api/internal.ts
 import { Router, type Request, type Response } from "express";
 import Comment from "@/models/Comments";
-import type { UpdateResult } from "mongodb";
 
 const router = Router();
 const SERVICE_KEY = process.env.COMMENTS_SERVICE_KEY;
 
+// POST /api/internal/comments/claim-by-email
 router.post("/comments/claim-by-email", async (req: Request, res: Response) => {
   try {
     if (!SERVICE_KEY || req.header("x-service-key") !== SERVICE_KEY) {
@@ -18,18 +17,15 @@ router.post("/comments/claim-by-email", async (req: Request, res: Response) => {
       return;
     }
 
-    const result: UpdateResult = await Comment.updateMany(
+    const result = await Comment.updateMany(
       { authorId: { $exists: false }, authorEmail: email },
       { $set: { authorId: userId } }
     );
 
-    res.json({
-      ok: true,
-      data: {
-        matched: result.matchedCount ?? 0,
-        modified: result.modifiedCount ?? 0
-      }
-    });
+    const matched = (result as any).matchedCount ?? 0;
+    const modified = (result as any).modifiedCount ?? 0;
+
+    res.json({ ok: true, data: { matched, modified } });
   } catch (err) {
     console.error("POST /api/internal/comments/claim-by-email error:", err);
     res.status(500).json({ ok: false, error: { code: "SERVER_ERROR", message: "Unexpected error" } });
