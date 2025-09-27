@@ -32,76 +32,25 @@ const createCommentSchema = z.object({
 // ---- Helpers ----
 function requireAdminKey(req: Request, res: Response): boolean {
   if (!ADMIN_KEY) {
-    res.status(501).json({ ok: false, error: { code: "NOT_CONFIGURED", message: "Set COMMENTS_ADMIN_KEY" } });
+    res
+      .status(501)
+      .json({ ok: false, error: { code: "NOT_CONFIGURED", message: "Set COMMENTS_ADMIN_KEY" } });
     return false;
   }
   if (req.header("x-admin-key") !== ADMIN_KEY) {
-    res.status(401).json({ ok: false, error: { code: "UNAUTHORIZED", message: "Invalid admin key" } });
+    res
+      .status(401)
+      .json({ ok: false, error: { code: "UNAUTHORIZED", message: "Invalid admin key" } });
     return false;
   }
   return true;
 }
 
-// ============================
-// GET /api/comments/:slug → visible comments (newest first)
-// ============================
-router.get("/:slug", async (req: Request<{ slug: string }>, res: Response) => {
-  try {
-    const slug = String(req.params.slug || "").trim();
-    if (!slug) {
-      res.status(400).json({ ok: false, error: { code: "BAD_REQUEST", message: "Missing slug" } });
-      return;
-    }
+/* ============================
+   ADMIN (declare before '/:slug')
+   ============================ */
 
-    const comments = await Comment.find({ normalizedKey: slug, status: "visible" })
-      .sort({ createdAt: -1 })
-      .limit(200)
-      .lean({ getters: false, virtuals: false }); // authorEmail is select:false in model
-
-    res.json({ ok: true, data: { comments } });
-  } catch (err) {
-    console.error("GET /api/comments/:slug error:", err);
-    res.status(500).json({ ok: false, error: { code: "SERVER_ERROR", message: "Unexpected error" } });
-  }
-});
-
-// ============================
-// POST /api/comments → create (guest or logged-in later); pending by default
-// ============================
-router.post("/", limiter, async (req: Request, res: Response) => {
-  try {
-    const parsed = createCommentSchema.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({
-        ok: false,
-        error: { code: "VALIDATION_ERROR", message: "Invalid input", details: parsed.error.flatten() }
-      });
-      return;
-    }
-
-    const { hp, ...data } = parsed.data;
-    if (hp && hp.trim() !== "") {
-      // Honeypot tripped → pretend success, drop
-      res.json({ ok: true });
-      return;
-    }
-
-    await Comment.create({
-      ...data,
-      status: AUTO_VISIBLE ? "visible" : "pending"
-    });
-
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("POST /api/comments error:", err);
-    res.status(500).json({ ok: false, error: { code: "SERVER_ERROR", message: "Unexpected error" } });
-  }
-});
-
-// ============================
-// Admin list (see pending items + IDs quickly)
 // GET /api/comments/admin/list?status=pending&slug=test-slug&limit=200
-// ============================
 router.get("/admin/list", async (req: Request, res: Response) => {
   if (!requireAdminKey(req, res)) return;
 
@@ -126,9 +75,6 @@ router.get("/admin/list", async (req: Request, res: Response) => {
   res.json({ ok: true, data: { items } });
 });
 
-// ============================
-// TEMP ADMIN: approve/hide/delete (guarded by x-admin-key)
-// ============================
 router.patch("/:id/visible", async (req, res) => {
   if (!requireAdminKey(req, res)) return;
   try {
@@ -173,6 +119,66 @@ router.delete("/:id", async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error("DELETE comment error:", err);
+    res.status(500).json({ ok: false, error: { code: "SERVER_ERROR", message: "Unexpected error" } });
+  }
+});
+
+/* ============================
+   PUBLIC
+   ============================ */
+
+// GET /api/comments/:slug → visible comments (newest first)
+router.get("/:slug", async (req: Request<{ slug: string }>, res: Response) => {
+  try {
+    const slug = String(req.params.slug || "").trim();
+    if (!slug) {
+      res.status(400).json({ ok: false, error: { code: "BAD_REQUEST", message: "Missing slug" } });
+      return;
+    }
+
+    const comments = await Comment.find({ normalizedKey: slug, status: "visible" })
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .lean({ getters: false, virtuals: false });
+
+    res.json({ ok: true, data: { comments } });
+  } catch (err) {
+    console.error("GET /api/comments/:slug error:", err);
+    res.status(500).json({ ok: false, error: { code: "SERVER_ERROR", message: "Unexpected error" } });
+  }
+});
+
+// POST /api/comments → create (guest or logged-in later); pending by default
+router.post("/", limiter, async (req: Request, res: Response) => {
+  try {
+    const parsed = createCommentSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        ok: false,
+        error: { code: "VALIDATION_ERROR", message: "Invalid input", details: parsed.error.flatten() }
+      });
+      return;
+    }
+
+    const { hp, ...data } = parsed.data;
+    if (hp && hp.trim() !== "") {
+      // Honeypot tripped → pretend success, drop
+      res.json({ ok: true });
+      return;
+    }
+
+    const created = await Comment.create({
+      ...data,
+      status: AUTO_VISIBLE ? "visible" : "pending"
+    });
+
+    console.log(
+      `[comments] created _id=${created._id.toString()} key=${created.normalizedKey} status=${created.status}`
+    );
+
+    res.json({ ok: true, data: { id: created._id, status: created.status } });
+  } catch (err) {
+    console.error("POST /api/comments error:", err);
     res.status(500).json({ ok: false, error: { code: "SERVER_ERROR", message: "Unexpected error" } });
   }
 });
