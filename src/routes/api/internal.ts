@@ -1,10 +1,11 @@
-import { Router, Request, Response } from "express";
+// src/routes/api/internal.ts
+import { Router, type Request, type Response } from "express";
 import Comment from "@/models/Comments";
+import type { UpdateResult } from "mongodb";
 
 const router = Router();
 const SERVICE_KEY = process.env.COMMENTS_SERVICE_KEY;
 
-// POST /api/internal/comments/claim-by-email
 router.post("/comments/claim-by-email", async (req: Request, res: Response) => {
   try {
     if (!SERVICE_KEY || req.header("x-service-key") !== SERVICE_KEY) {
@@ -17,7 +18,7 @@ router.post("/comments/claim-by-email", async (req: Request, res: Response) => {
       return;
     }
 
-    const result = await Comment.updateMany(
+    const result: UpdateResult = await Comment.updateMany(
       { authorId: { $exists: false }, authorEmail: email },
       { $set: { authorId: userId } }
     );
@@ -25,8 +26,8 @@ router.post("/comments/claim-by-email", async (req: Request, res: Response) => {
     res.json({
       ok: true,
       data: {
-        matched: (result as any).matchedCount ?? (result as any).matched,
-        modified: (result as any).modifiedCount ?? (result as any).modified
+        matched: result.matchedCount ?? 0,
+        modified: result.modifiedCount ?? 0
       }
     });
   } catch (err) {

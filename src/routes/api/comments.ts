@@ -1,4 +1,4 @@
-import { Router, Request, Response } from "express";
+import { Router, type Request, type Response } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import Comment from "@/models/Comments";
@@ -7,7 +7,7 @@ const router = Router();
 
 // ---- Config toggles via env ----
 const AUTO_VISIBLE = process.env.COMMENTS_AUTO_VISIBLE === "true";
-const ADMIN_KEY = process.env.COMMENTS_ADMIN_KEY || ""; // optional
+const ADMIN_KEY = process.env.COMMENTS_ADMIN_KEY || ""; // optional, used for admin ops
 
 // ---- Rate limit on create ----
 const limiter = rateLimit({
@@ -23,11 +23,7 @@ const createCommentSchema = z.object({
   brand: z.string().trim().max(120).optional(),
   model: z.string().trim().max(120).optional(),
   type: z.enum(["missing-data", "correction", "general"]),
-  body: z
-    .string()
-    .min(5)
-    .max(2000)
-    .transform((s) => s.replace(/\s+/g, " ").trim()),
+  body: z.string().min(5).max(2000).transform((s) => s.replace(/\s+/g, " ").trim()),
   authorName: z.string().trim().max(120).optional(),
   authorEmail: z.string().trim().max(254).email("Invalid email").optional(),
   hp: z.string().optional()
@@ -36,7 +32,7 @@ const createCommentSchema = z.object({
 // ---- Helpers ----
 function requireAdminKey(req: Request, res: Response): boolean {
   if (!ADMIN_KEY) {
-    res.status(501).json({ ok: false, error: { code: "NOT_CONFIGURED", message: "Admin key not set" } });
+    res.status(501).json({ ok: false, error: { code: "NOT_CONFIGURED", message: "Set COMMENTS_ADMIN_KEY" } });
     return false;
   }
   if (req.header("x-admin-key") !== ADMIN_KEY) {
@@ -47,8 +43,7 @@ function requireAdminKey(req: Request, res: Response): boolean {
 }
 
 // ============================
-// GET /api/comments/:slug
-// → Visible comments (newest first)
+// GET /api/comments/:slug → visible comments (newest first)
 // ============================
 router.get("/:slug", async (req: Request<{ slug: string }>, res: Response) => {
   try {
@@ -61,7 +56,7 @@ router.get("/:slug", async (req: Request<{ slug: string }>, res: Response) => {
     const comments = await Comment.find({ normalizedKey: slug, status: "visible" })
       .sort({ createdAt: -1 })
       .limit(200)
-      .lean({ getters: false, virtuals: false }); // authorEmail has select:false in the model
+      .lean({ getters: false, virtuals: false }); // authorEmail is select:false in model
 
     res.json({ ok: true, data: { comments } });
   } catch (err) {
@@ -71,8 +66,7 @@ router.get("/:slug", async (req: Request<{ slug: string }>, res: Response) => {
 });
 
 // ============================
-// POST /api/comments
-// → Create comment (guest or logged-in later), pending by default
+// POST /api/comments → create (guest or logged-in later); pending by default
 // ============================
 router.post("/", limiter, async (req: Request, res: Response) => {
   try {
@@ -92,10 +86,6 @@ router.post("/", limiter, async (req: Request, res: Response) => {
       return;
     }
 
-    // If/when you add auth middleware later:
-    // const userId = (req as any).user?._id;
-    // if (userId) (data as any).authorId = userId;
-
     await Comment.create({
       ...data,
       status: AUTO_VISIBLE ? "visible" : "pending"
@@ -109,18 +99,36 @@ router.post("/", limiter, async (req: Request, res: Response) => {
 });
 
 // ============================
-// PATCH /api/comments/:id/status (scaffold)
+// Admin list (see pending items + IDs quickly)
+// GET /api/comments/admin/list?status=pending&slug=test-slug&limit=200
 // ============================
-router.patch("/:id/status", async (_req, res) => {
-  res.status(501).json({ ok: false, error: { code: "NOT_IMPLEMENTED", message: "Moderation pending" } });
+router.get("/admin/list", async (req: Request, res: Response) => {
+  if (!requireAdminKey(req, res)) return;
+
+  const { status, slug, limit } = req.query as {
+    status?: "visible" | "pending" | "hidden";
+    slug?: string;
+    limit?: string;
+  };
+
+  const filter: Record<string, unknown> = {};
+  if (status) filter.status = status;
+  if (slug) filter.normalizedKey = slug;
+
+  const lim = Math.min(Math.max(parseInt(String(limit ?? "200"), 10) || 200, 1), 500);
+
+  const items = await Comment.find(filter)
+    .sort({ createdAt: -1 })
+    .limit(lim)
+    .select("+authorEmail") // include email for admin view; public GET still excludes it
+    .lean({ getters: false, virtuals: false });
+
+  res.json({ ok: true, data: { items } });
 });
 
 // ============================
-// --- TEMP ADMIN (no auth system yet) ---
-// Use x-admin-key header == COMMENTS_ADMIN_KEY
+// TEMP ADMIN: approve/hide/delete (guarded by x-admin-key)
 // ============================
-
-// Make a comment visible
 router.patch("/:id/visible", async (req, res) => {
   if (!requireAdminKey(req, res)) return;
   try {
@@ -137,7 +145,6 @@ router.patch("/:id/visible", async (req, res) => {
   }
 });
 
-// Hide a comment
 router.patch("/:id/hide", async (req, res) => {
   if (!requireAdminKey(req, res)) return;
   try {
@@ -154,7 +161,6 @@ router.patch("/:id/hide", async (req, res) => {
   }
 });
 
-// Delete a comment
 router.delete("/:id", async (req, res) => {
   if (!requireAdminKey(req, res)) return;
   try {
